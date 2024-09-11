@@ -1,0 +1,149 @@
+/*
+ * slntp.c - A simple p2p implementation of a delay tolerant network time protocol based on the sheaf laplacian (slntp)
+ * Logan Kissel, Jacob Cleveland, Robert Short, Alan Hylton, Michael Moy, Jimmy Hwang
+ * Summer 2024
+ */
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <string.h>
+#include <stdio.h>
+#include <netinet/in.h>
+#include <time.h>
+#include <math.h>
+
+#define BUFSIZE 2
+#define INPORT 4561
+#define OUTPORT 4560
+
+int len, optval, insock, outsock;
+int buf[BUFSIZE];
+int stuf[BUFSIZE];
+struct sockaddr_in inaddress, outaddress;
+struct timespec clktime;
+struct timespec error;
+struct timespec mytime, peertime;
+double test;
+FILE *fp, *confp;
+char peerip[15];
+char input[60];
+char printing = 0;
+int received = 0;
+int waitsec = 1;
+char filename[20];
+double coefficient=0.05;
+char c;
+int loc;
+
+double clktodouble(struct timespec in){
+  double result;
+  result = in.tv_sec + (0.000000001)*in.tv_nsec;
+  return result;
+}
+
+struct timespec doubletoclk(double in){
+  struct timespec result;
+  result.tv_sec = floor(abs(in));
+  if(in < 0){
+    result.tv_sec = -result.tv_sec;
+  }
+  result.tv_nsec = (int) ((in - result.tv_sec) * 1000000000);
+  return result;
+}
+
+struct timespec updateError(struct timespec mytime, struct timespec peertime, double coefficient){
+  struct timespec result;
+  double mydbl, peerdbl, resdbl;
+  mydbl = clktodouble(mytime);
+  peerdbl = clktodouble(peertime);
+  resdbl = (mydbl - peerdbl)*waitsec*coefficient;
+  resdbl += clktodouble(error);
+  result = doubletoclk(resdbl); 
+  return result;
+}
+
+//ADD CLOCK NOISE HERE
+struct timespec readclock(){
+  struct timespec result;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &clktime);
+  double temp = clktodouble(clktime);
+  double ertmp = clktodouble(error);
+  temp = temp - ertmp;
+  result = doubletoclk(temp); 
+  return result;
+}
+
+int wait(){
+  int t;
+  t = clock();
+  while((clock() - t ) <1000000 ){
+  received = recvfrom(insock, buf, sizeof(buf), MSG_DONTWAIT,
+          (struct sockaddr *) &inaddress, &len);
+  if(received != -1){
+    peertime.tv_sec = buf[0];
+    peertime.tv_nsec = buf[1];
+    test = clktodouble(peertime);
+    fp = fopen("out.txt", "a");
+    fprintf(fp, "%.9f,", test);
+    printf("Received:     %.9f\n", test);
+    mytime = readclock();
+    test = clktodouble(mytime);
+    fprintf(fp, "%.9f\n", test);
+    fclose(fp);
+    printf("Updated time: %.9f\n", test);
+    if(abs(clktodouble(mytime) - clktodouble(peertime)) < 0.0001){
+       printf("Error threshold reached\n");
+    }
+    error = updateError(mytime, peertime, coefficient);
+    //printf("Seconds: %d\n", (int) error.tv_sec);
+    //printf("nSeconds: %d\n", (int) error.tv_nsec);
+    //printf("error: %.9f\n", clktodouble(error));
+  }
+  }
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  memset(&error, 0, sizeof(error));
+  mytime = readclock();
+  printf("Seconds: %d\n", (int) mytime.tv_sec);
+  printf("nSeconds: %d\n", (int) mytime.tv_nsec);
+  test = clktodouble(mytime);
+  printf("Initial time: %.9f\n", test);
+  optval = 1;
+  
+  memset(&inaddress, 0 , sizeof(inaddress));
+  inaddress.sin_family = AF_INET;
+  inaddress.sin_addr.s_addr = INADDR_ANY;
+  inaddress.sin_port = htons(INPORT);
+  insock = socket(AF_INET, SOCK_DGRAM, 0);
+  setsockopt(insock, SOL_SOCKET, SO_REUSEADDR,(const void *)&optval, sizeof(int));
+  bind(insock, (struct sockaddr *) &inaddress, sizeof(inaddress));
+  
+  memset(&outaddress, 0 , sizeof(outaddress));            
+  outaddress.sin_family = AF_INET;
+  outaddress.sin_addr.s_addr = INADDR_ANY;
+  outaddress.sin_port = htons(OUTPORT);
+  
+  len = sizeof(inaddress);
+   
+  fp = fopen("out.txt", "w");
+  fprintf(fp, "Received time,Updated time\n");
+  fclose(fp);
+  
+  char count = 1;
+ 
+  while(1){
+    clktime = readclock(); 
+    stuf[0] = clktime.tv_sec;
+    stuf[1] = clktime.tv_nsec;
+    test = clktodouble(clktime);
+    sendto(insock, stuf, sizeof(stuf), 0,
+            (struct sockaddr *) &outaddress, len);
+    for(int i = 0; i < waitsec; i++){
+      wait();
+      }
+  }
+  return 1;
+  }
